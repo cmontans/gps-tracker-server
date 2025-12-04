@@ -1,4 +1,3 @@
-
 // server.js - Servidor WebSocket para GPS Speed Tracker
 const WebSocket = require('ws');
 const express = require('express');
@@ -69,8 +68,9 @@ wss.on('connection', (ws, req) => {
       
       switch (data.type) {
         case 'register':
-          console.log(`📝 Usuario registrado: ${data.userId}`);
+          console.log(`📝 Usuario registrado: ${data.userName || data.userId}`);
           ws.userId = data.userId;
+          ws.userName = data.userName || 'Usuario';
           sendUsersList();
           break;
           
@@ -78,13 +78,14 @@ wss.on('connection', (ws, req) => {
           // Actualizar datos del usuario
           users.set(data.userId, {
             userId: data.userId,
+            userName: data.userName || 'Usuario',
             speed: data.speed,
             lat: data.lat,
             lon: data.lon,
             timestamp: data.timestamp
           });
           
-          console.log(`📊 Velocidad actualizada - Usuario: ${data.userId}, Velocidad: ${data.speed} km/h`);
+          console.log(`📊 Velocidad actualizada - ${data.userName || data.userId}: ${data.speed} km/h`);
           
           // Enviar lista actualizada a todos
           sendUsersList();
