@@ -90,6 +90,11 @@ wss.on('connection', (ws, req) => {
           // Enviar lista actualizada a todos
           sendUsersList();
           break;
+
+        case 'ping':
+          // Responder al keep-alive ping
+          ws.send(JSON.stringify({ type: 'pong' }));
+          break;
           
         default:
           console.log('⚠️ Tipo de mensaje desconocido:', data.type);
