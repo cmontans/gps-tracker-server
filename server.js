@@ -76,16 +76,23 @@ wss.on('connection', (ws, req) => {
           
         case 'speed':
           // Actualizar datos del usuario
+          const currentUser = users.get(data.userId);
+          const newMaxSpeed = currentUser 
+            ? Math.max(currentUser.maxSpeed || 0, data.maxSpeed || data.speed)
+            : data.maxSpeed || data.speed;
+          
           users.set(data.userId, {
             userId: data.userId,
             userName: data.userName || 'Usuario',
             speed: data.speed,
+            maxSpeed: newMaxSpeed,
             lat: data.lat,
             lon: data.lon,
+            bearing: data.bearing || 0,
             timestamp: data.timestamp
           });
           
-          console.log(`📊 Velocidad actualizada - ${data.userName || data.userId}: ${data.speed} km/h`);
+          console.log(`📊 ${data.userName || data.userId}: ${data.speed} km/h | Rumbo: ${data.bearing}° | Max: ${newMaxSpeed} km/h`);
           
           // Enviar lista actualizada a todos
           sendUsersList();
