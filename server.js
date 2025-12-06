@@ -21,6 +21,10 @@ const wss = new WebSocket.Server({ server });
 // Almacenar usuarios conectados por grupo
 const groups = new Map(); // Map<groupName, Map<userId, userData>>
 
+// Rate limiting para bocina grupal (userId -> último timestamp)
+const hornRateLimit = new Map(); // Map<userId, timestamp>
+const HORN_COOLDOWN = 5000; // 5 segundos de cooldown entre bocinas
+
 // Función para broadcast a un grupo específico
 function broadcastToGroup(groupName, data) {
   const message = JSON.stringify(data);
@@ -141,7 +145,47 @@ wss.on('connection', (ws, req) => {
           // Responder al keep-alive ping
           ws.send(JSON.stringify({ type: 'pong' }));
           break;
-          
+
+        case 'group-horn':
+          const hornGroup = data.groupName || 'default';
+          const hornUserId = data.userId;
+          const hornUserName = data.userName || 'Usuario';
+          const now = Date.now();
+
+          // Validar que el grupo existe
+          if (!groups.has(hornGroup)) {
+            console.log(`⚠️ Intento de bocina en grupo inexistente: ${hornGroup}`);
+            break;
+          }
+
+          // Rate limiting: verificar cooldown
+          const lastHornTime = hornRateLimit.get(hornUserId);
+          if (lastHornTime && (now - lastHornTime) < HORN_COOLDOWN) {
+            const remainingTime = Math.ceil((HORN_COOLDOWN - (now - lastHornTime)) / 1000);
+            console.log(`⏱️ Rate limit: ${hornUserName} debe esperar ${remainingTime}s para usar la bocina`);
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: `Debes esperar ${remainingTime} segundos antes de usar la bocina nuevamente`
+            }));
+            break;
+          }
+
+          // Actualizar timestamp del último uso
+          hornRateLimit.set(hornUserId, now);
+
+          // Log de auditoría
+          console.log(`📢 Bocina activada por ${hornUserName} (${hornUserId}) en grupo ${hornGroup}`);
+
+          // Distribuir mensaje a todos los usuarios del mismo grupo
+          broadcastToGroup(hornGroup, {
+            type: 'group-horn',
+            userId: hornUserId,
+            userName: hornUserName,
+            groupName: hornGroup,
+            timestamp: data.timestamp || now
+          });
+          break;
+
         default:
           console.log('⚠️ Tipo de mensaje desconocido:', data.type);
       }
@@ -153,11 +197,11 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     if (ws.groupName && !ws.viewerMode && ws.userId) {
       console.log(`👋 Usuario desconectado: ${ws.userId} (Grupo: ${ws.groupName})`);
-      
+
       const groupUsers = groups.get(ws.groupName);
       if (groupUsers) {
         groupUsers.delete(ws.userId);
-        
+
         // Si el grupo queda vacío, eliminarlo
         if (groupUsers.size === 0) {
           groups.delete(ws.groupName);
@@ -166,6 +210,9 @@ wss.on('connection', (ws, req) => {
           sendUsersListToGroup(ws.groupName);
         }
       }
+
+      // Limpiar rate limiting del usuario desconectado
+      hornRateLimit.delete(ws.userId);
     } else if (ws.viewerMode) {
       console.log(`👋 Visualizador desconectado del grupo: ${ws.groupName}`);
     }
