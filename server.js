@@ -25,6 +25,10 @@ const groups = new Map(); // Map<groupName, Map<userId, userData>>
 const hornRateLimit = new Map(); // Map<userId, timestamp>
 const HORN_COOLDOWN = 5000; // 5 segundos de cooldown entre bocinas
 
+// Almacenar historial de velocidad por usuario
+const speedHistory = new Map(); // Map<userId, Array<speedRecord>>
+const MAX_HISTORY_PER_USER = 1000; // Límite de registros por usuario
+
 // Función para broadcast a un grupo específico
 function broadcastToGroup(groupName, data) {
   const message = JSON.stringify(data);
@@ -111,18 +115,18 @@ wss.on('connection', (ws, req) => {
           
         case 'speed':
           const group = data.groupName || 'default';
-          
+
           // Asegurar que el grupo existe
           if (!groups.has(group)) {
             groups.set(group, new Map());
           }
-          
+
           const groupUsers = groups.get(group);
           const currentUser = groupUsers.get(data.userId);
-          const newMaxSpeed = currentUser 
+          const newMaxSpeed = currentUser
             ? Math.max(currentUser.maxSpeed || 0, data.maxSpeed || data.speed)
             : data.maxSpeed || data.speed;
-          
+
           // Actualizar datos del usuario en su grupo
           groupUsers.set(data.userId, {
             userId: data.userId,
@@ -134,9 +138,31 @@ wss.on('connection', (ws, req) => {
             bearing: data.bearing || 0,
             timestamp: data.timestamp
           });
-          
+
+          // Grabar en el historial de velocidad
+          if (!speedHistory.has(data.userId)) {
+            speedHistory.set(data.userId, []);
+          }
+          const history = speedHistory.get(data.userId);
+          history.push({
+            userId: data.userId,
+            userName: data.userName || 'Usuario',
+            groupName: group,
+            speed: data.speed,
+            maxSpeed: newMaxSpeed,
+            lat: data.lat,
+            lon: data.lon,
+            bearing: data.bearing || 0,
+            timestamp: data.timestamp
+          });
+
+          // Limitar el tamaño del historial para cada usuario
+          if (history.length > MAX_HISTORY_PER_USER) {
+            history.shift(); // Eliminar el registro más antiguo
+          }
+
           console.log(`📊 [${group}] ${data.userName || data.userId}: ${data.speed} km/h | Rumbo: ${data.bearing}° | Max: ${newMaxSpeed} km/h`);
-          
+
           // Enviar lista actualizada solo a usuarios del mismo grupo
           sendUsersListToGroup(group);
           break;
@@ -258,15 +284,111 @@ app.get('/groups', (req, res) => {
 app.get('/groups/:groupName', (req, res) => {
   const groupName = req.params.groupName;
   const groupUsers = groups.get(groupName);
-  
+
   if (!groupUsers) {
     return res.status(404).json({ error: 'Grupo no encontrado' });
   }
-  
+
   res.json({
     groupName: groupName,
     users: Array.from(groupUsers.values()),
     count: groupUsers.size
+  });
+});
+
+// Endpoint para obtener historial de velocidad de un usuario específico
+app.get('/users/:userId/speed-history', (req, res) => {
+  const userId = req.params.userId;
+  const limit = req.query.limit ? parseInt(req.query.limit) : 100;
+  const offset = req.query.offset ? parseInt(req.query.offset) : 0;
+
+  const history = speedHistory.get(userId);
+
+  if (!history) {
+    return res.json({
+      userId: userId,
+      totalRecords: 0,
+      records: [],
+      limit: limit,
+      offset: offset
+    });
+  }
+
+  // Aplicar paginación
+  const records = history.slice(Math.max(0, history.length - offset - limit), history.length - offset);
+
+  res.json({
+    userId: userId,
+    totalRecords: history.length,
+    records: records,
+    limit: limit,
+    offset: offset,
+    hasMore: offset + limit < history.length
+  });
+});
+
+// Endpoint para obtener estadísticas de velocidad de un usuario
+app.get('/users/:userId/speed-stats', (req, res) => {
+  const userId = req.params.userId;
+  const history = speedHistory.get(userId);
+
+  if (!history || history.length === 0) {
+    return res.json({
+      userId: userId,
+      recordCount: 0,
+      stats: null
+    });
+  }
+
+  const speeds = history.map(record => record.speed);
+  const maxSpeed = Math.max(...speeds);
+  const minSpeed = Math.min(...speeds);
+  const avgSpeed = (speeds.reduce((a, b) => a + b, 0) / speeds.length).toFixed(2);
+
+  res.json({
+    userId: userId,
+    recordCount: history.length,
+    stats: {
+      maxSpeed: maxSpeed,
+      minSpeed: minSpeed,
+      averageSpeed: parseFloat(avgSpeed),
+      firstRecord: history[0].timestamp,
+      lastRecord: history[history.length - 1].timestamp,
+      sessionDuration: history[history.length - 1].timestamp - history[0].timestamp
+    }
+  });
+});
+
+// Endpoint para obtener historial de velocidad de todos los usuarios en un grupo
+app.get('/groups/:groupName/speed-history', (req, res) => {
+  const groupName = req.params.groupName;
+  const limit = req.query.limit ? parseInt(req.query.limit) : 50;
+  const offset = req.query.offset ? parseInt(req.query.offset) : 0;
+
+  const groupHistory = {};
+  let totalRecords = 0;
+
+  speedHistory.forEach((history, userId) => {
+    // Filtrar por grupo si es necesario
+    const groupRecords = history.filter(record => record.groupName === groupName);
+    if (groupRecords.length > 0) {
+      totalRecords += groupRecords.length;
+      // Aplicar paginación a cada usuario
+      const records = groupRecords.slice(Math.max(0, groupRecords.length - offset - limit), groupRecords.length - offset);
+      groupHistory[userId] = {
+        totalRecords: groupRecords.length,
+        records: records
+      };
+    }
+  });
+
+  res.json({
+    groupName: groupName,
+    totalRecords: totalRecords,
+    userCount: Object.keys(groupHistory).length,
+    history: groupHistory,
+    limit: limit,
+    offset: offset
   });
 });
 
@@ -276,5 +398,8 @@ console.log(`\n💡 Endpoints disponibles:`);
 console.log(`   - GET /health - Estado del servidor`);
 console.log(`   - GET /groups - Lista de todos los grupos`);
 console.log(`   - GET /groups/:groupName - Usuarios de un grupo específico`);
+console.log(`   - GET /users/:userId/speed-history - Historial de velocidad de un usuario`);
+console.log(`   - GET /users/:userId/speed-stats - Estadísticas de velocidad de un usuario`);
+console.log(`   - GET /groups/:groupName/speed-history - Historial de velocidad de un grupo`);
 console.log(`\n⚙️  Para usar desde otro dispositivo, reemplaza 'localhost' con la IP de este equipo`);
 console.log(`\n🔐 Sistema de grupos activado - Los usuarios solo verán a otros de su mismo grupo\n`);
